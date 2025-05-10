@@ -16,11 +16,25 @@ jobs:
         id: determine_label
         run: |
           label=""
+
+          # 1) Bugfix
           if grep -qE '^- \[x\] Bugfix' pr_body.txt; then
             label="bugfix"
+
+          # 2) New feature
           elif grep -qE '^- \[x\] New feature' pr_body.txt; then
             label="new-feature"
-          # ... (rest of the logic)
+
+          # 3) Breaking change
+          elif grep -qE '^- \[x\] Breaking change' pr_body.txt; then
+            label="breaking-change"
+
+          # 4) Dependency update
+          elif grep -qE '^- \[x\] Dependency Update - Does not publish' pr_body.txt; then
+            label="dependency-update"
+          fi
+
+          echo "Chosen label: $label"
           echo "chosen_label=$label" >> $GITHUB_OUTPUT
       - name: Apply Single Label
         if: ${{ steps.determine_label.outputs.chosen_label != '' }}
