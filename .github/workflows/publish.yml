@@ -1,0 +1,121 @@
+name: Reusable Publish Workflow
+
+on:
+  workflow_call:
+    inputs:
+      core_yaml_path:
+        required: true
+        type: string
+      firmwares_json:
+        required: true
+        type: string
+
+jobs:
+  set-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read_version.outputs.version }}
+      upload_url: ${{ steps.run-release-drafter.outputs.upload_url }}
+      body: ${{ steps.run-release-drafter.outputs.body }}
+      html_url: ${{ steps.run-release-drafter.outputs.html_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Read version from YAML file
+        id: read_version
+        run: |
+          version=$(awk '/substitutions:/ {found=1} found && /version:/ {print $2; exit}' ${{ inputs.core_yaml_path }} | tr -d '"')
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "Detected version: $version"
+      - name: Fetch Last Merged PR Body
+        id: last_pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls?state=closed&sort=updated&direction=desc&per_page=1")
+          PR_BODY=$(echo "$PR_INFO" | jq -r '.[0].body')
+          echo "$PR_BODY" > pr_body.txt
+      - name: Run Release Drafter
+        id: run-release-drafter
+        uses: release-drafter/release-drafter@v6
+        with:
+          version: ${{ steps.read_version.outputs.version }}
+          publish: true
+          tag: ${{ steps.read_version.outputs.version }}
+          name: Release ${{ steps.read_version.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-firmware:
+    needs: set-version
+    strategy:
+      matrix:
+        firmware: ${{ fromJson(inputs.firmwares_json) }}
+    uses: esphome/workflows/.github/workflows/build.yml@main
+    with:
+      files: ${{ matrix.firmware.yaml }}
+      esphome-version: stable
+      combined-name: ${{ matrix.firmware.name }}
+      release-summary: ${{ needs.set-version.outputs.body }}
+      release-version: ${{ needs.set-version.outputs.version }}
+
+  build-site:
+    needs: [set-version, build-firmware]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Build
+        uses: actions/jekyll-build-pages@v1.0.13
+        with:
+          source: ./static
+          destination: ./output
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: output
+
+  publish:
+    needs: [build-site, build-firmware, set-version]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Download firmwares
+        run: |
+          firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
+          for name in "${firmwares[@]}"; do
+            gh run download -n "$name" -D "$name"
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Zip and upload firmwares
+        run: |
+          version=${{ needs.set-version.outputs.version }}
+          firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
+          for name in "${firmwares[@]}"; do
+            zip -r "$name.zip" "$name"
+            gh release upload --clobber "$version" "$name.zip"
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Copy firmwares to output
+        run: |
+          version=${{ needs.set-version.outputs.version }}
+          firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
+          for name in "${firmwares[@]}"; do
+            mkdir -p output/"$name"
+            cp -r "$name"/"$version"/* output/"$name"/
+          done
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: output
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
