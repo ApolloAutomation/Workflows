@@ -1,0 +1,30 @@
+on:
+  workflow_call:
+
+jobs:
+  label-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Write PR Body to File
+        run: |
+          set +H
+          set +o histexpand
+          printf '%s\n' "${{ github.event.pull_request.body }}" > pr_body.txt
+      - name: Determine Single Label
+        id: determine_label
+        run: |
+          label=""
+          if grep -qE '^- \[x\] Bugfix' pr_body.txt; then
+            label="bugfix"
+          elif grep -qE '^- \[x\] New feature' pr_body.txt; then
+            label="new-feature"
+          # ... (rest of the logic)
+          echo "chosen_label=$label" >> $GITHUB_OUTPUT
+      - name: Apply Single Label
+        if: ${{ steps.determine_label.outputs.chosen_label != '' }}
+        uses: actions-ecosystem/action-add-labels@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          labels: ${{ steps.determine_label.outputs.chosen_label }}
