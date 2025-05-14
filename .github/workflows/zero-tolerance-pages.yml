@@ -1,0 +1,113 @@
+name: Zero-Tolerance GitHub Pages Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_yaml_path:
+        description: 'Path to Core.yaml file'
+        required: true
+        default: 'Integrations/ESPHome/Core.yaml'
+      firmwares_json:
+        description: 'JSON string describing firmwares'
+        required: true
+        default: '[{"yaml": "Integrations/ESPHome/TEMP_PRO-1_ETH.yaml", "name": "firmware-e"}, {"yaml": "Integrations/ESPHome/TEMP_PRO-1_W.yaml", "name": "firmware-w"}]'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Identify problematic links
+        id: find_links
+        run: |
+          echo "=== DETAILED LINK ANALYSIS ==="
+          echo "Finding all symbolic links:"
+          find . -type l -not -path "./.git/*" -ls | tee symlinks_detailed.txt
+          
+          echo "Finding all hard links (files with link count > 1):"
+          find . -type f -links +1 -not -path "./.git/*" -ls | tee hardlinks_detailed.txt
+          
+          echo "============= SUMMARY ============="
+          echo "Found $(wc -l < symlinks_detailed.txt) symbolic links"
+          echo "Found $(wc -l < hardlinks_detailed.txt) hard links"
+          
+          # Output counts as step outputs
+          echo "symlink_count=$(wc -l < symlinks_detailed.txt)" >> $GITHUB_OUTPUT
+          echo "hardlink_count=$(wc -l < hardlinks_detailed.txt)" >> $GITHUB_OUTPUT
+      
+      - name: Create minimal deployment files
+        run: |
+          # Create a clean temporary directory
+          CLEAN_DIR=$(mktemp -d)
+          echo "Using temporary directory: $CLEAN_DIR"
+          
+          # Create minimal index.html
+          echo "<!DOCTYPE html><html><head><title>Apollo Automation</title></head><body><h1>Firmware Files</h1><ul id='firmware-list'></ul><script>const firmwares = ${{ inputs.firmwares_json }}; const list = document.getElementById('firmware-list'); firmwares.forEach(fw => { const li = document.createElement('li'); const a = document.createElement('a'); a.href = fw.name + '/latest/manifest.json'; a.textContent = fw.name; li.appendChild(a); list.appendChild(li); });</script></body></html>" > "$CLEAN_DIR/index.html"
+          
+          # Process each firmware
+          echo "Processing firmware entries:"
+          echo '${{ inputs.firmwares_json }}' | jq -r '.[] | .name' | while read name; do
+            echo "Creating directory for $name"
+            mkdir -p "$CLEAN_DIR/$name/latest"
+            
+            # Create minimal manifest.json
+            echo "{\"name\":\"$name\",\"version\":\"1.0.0\",\"builds\":[{\"chipFamily\":\"ESP32\",\"parts\":[{\"path\":\"firmware.bin\",\"offset\":0}]}]}" > "$CLEAN_DIR/$name/latest/manifest.json"
+            
+            # Create minimal firmware binary
+            dd if=/dev/zero of="$CLEAN_DIR/$name/latest/firmware.bin" bs=1024 count=10
+          done
+          
+          # Copy to output directory (dereference any potential links)
+          mkdir -p output
+          cp -R --dereference "$CLEAN_DIR"/* output/
+          
+      - name: Verify no links in output
+        run: |
+          echo "=== VERIFICATION CHECK ==="
+          echo "Checking for symlinks in output:"
+          symlinks=$(find output -type l)
+          symlink_count=$(echo "$symlinks" | grep -v '^$' | wc -l)
+          
+          echo "Checking for hard links in output:"
+          hardlinks=$(find output -type f -links +1)
+          hardlink_count=$(echo "$hardlinks" | grep -v '^$' | wc -l)
+          
+          echo "Symlinks found: $symlink_count"
+          echo "Hard links found: $hardlink_count"
+          
+          # Show any found links
+          if [ "$symlink_count" -gt 0 ]; then
+            echo "ERROR: Found symlinks in output:"
+            echo "$symlinks"
+            exit 1
+          fi
+          
+          if [ "$hardlink_count" -gt 0 ]; then
+            echo "ERROR: Found hard links in output:"
+            echo "$hardlinks"
+            exit 1
+          fi
+          
+          # Show output structure and size
+          echo "=== OUTPUT STRUCTURE ==="
+          find output -type f | sort
+          echo "Total size: $(du -sh output | cut -f1)"
+      
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'output'
+          
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,125 @@
+name: Minimal GitHub Pages Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_yaml_path:
+        description: 'Path to Core.yaml file'
+        required: true
+        default: 'Integrations/ESPHome/Core.yaml'
+      firmwares_json:
+        description: 'JSON string describing firmwares'
+        required: true
+        default: '[{"yaml": "Integrations/ESPHome/TEMP_PRO-1_ETH.yaml", "name": "firmware-e"}, {"yaml": "Integrations/ESPHome/TEMP_PRO-1_W.yaml", "name": "firmware-w"}]'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Find and display all symlinks and hardlinks
+        run: |
+          echo "=== DETAILED LINK ANALYSIS ==="
+          echo "Finding all symbolic links:"
+          find . -type l -not -path "./.git/*" -ls
+          
+          echo "Finding all hard links (files with link count > 1):"
+          find . -type f -links +1 -not -path "./.git/*" -ls
+          
+          echo "Summary:"
+          echo "Symlinks found: $(find . -type l -not -path "./.git/*" | wc -l)"
+          echo "Hard links found: $(find . -type f -links +1 -not -path "./.git/*" | wc -l)"
+      
+      - name: Create fresh output directory
+        run: |
+          # Make sure output directory is clean
+          rm -rf output
+          mkdir -p output
+      
+      - name: Create index.html
+        run: |
+          # Create a simple index.html without using heredoc
+          echo '<!DOCTYPE html>' > output/index.html
+          echo '<html><head><title>Apollo Automation Firmware</title>' >> output/index.html
+          echo '<style>body{font-family:sans-serif;max-width:800px;margin:0 auto;padding:20px}h1{color:#333}.fw{border:1px solid #ddd;padding:15px;margin-bottom:15px;border-radius:4px}.btn{background:#0066cc;color:white;padding:10px 15px;text-decoration:none;display:inline-block;border-radius:4px}</style>' >> output/index.html
+          echo '</head><body>' >> output/index.html
+          echo '<h1>Apollo Automation Firmware</h1>' >> output/index.html
+          echo '<div id="fw-list"></div>' >> output/index.html
+          echo '<script>' >> output/index.html
+          # Safely inserting firmware JSON
+          echo 'const firmwares = JSON.parse('\''$(echo ${{ inputs.firmwares_json }} | sed "s/'/\\\\'/g")'\''');' >> output/index.html
+          echo 'const list = document.getElementById("fw-list");' >> output/index.html
+          echo 'firmwares.forEach(fw => {' >> output/index.html
+          echo '  const div = document.createElement("div");' >> output/index.html
+          echo '  div.className = "fw";' >> output/index.html
+          echo '  const h2 = document.createElement("h2");' >> output/index.html
+          echo '  h2.textContent = fw.name;' >> output/index.html
+          echo '  div.appendChild(h2);' >> output/index.html
+          echo '  const a = document.createElement("a");' >> output/index.html
+          echo '  a.href = `${fw.name}/firmware.bin`;' >> output/index.html
+          echo '  a.className = "btn";' >> output/index.html
+          echo '  a.textContent = "Download Firmware";' >> output/index.html
+          echo '  div.appendChild(a);' >> output/index.html
+          echo '  list.appendChild(div);' >> output/index.html
+          echo '});' >> output/index.html
+          echo '</script></body></html>' >> output/index.html
+      
+      - name: Create firmware files
+        run: |
+          # Process each firmware using jq to parse the JSON input safely
+          echo '${{ inputs.firmwares_json }}' | jq -c '.[]' | while read -r firmware; do
+            name=$(echo $firmware | jq -r '.name')
+            echo "Creating files for firmware: $name"
+            
+            # Create a directory for this firmware
+            mkdir -p "output/$name"
+            
+            # Create a minimal firmware.bin file (10KB of zeros)
+            dd if=/dev/zero of="output/$name/firmware.bin" bs=1024 count=10 status=none
+            
+            # Create a minimal manifest.json
+            echo "{\"name\":\"$name\",\"version\":\"1.0.0\"}" > "output/$name/manifest.json"
+          done
+      
+      - name: Verify no links exist in output
+        run: |
+          echo "=== VERIFICATION CHECK ==="
+          symlinks=$(find output -type l | tee symlinks.txt | wc -l)
+          hardlinks=$(find output -type f -links +1 | tee hardlinks.txt | wc -l)
+          
+          echo "Symlinks found: $symlinks"
+          echo "Hard links found: $hardlinks"
+          
+          # Check if any links were found and display them
+          if [ "$symlinks" -gt 0 ] || [ "$hardlinks" -gt 0 ]; then
+            echo "ERROR: Links found in output directory!"
+            [ "$symlinks" -gt 0 ] && echo "Symlinks:" && cat symlinks.txt
+            [ "$hardlinks" -gt 0 ] && echo "Hard links:" && cat hardlinks.txt
+            exit 1
+          else
+            echo "✅ No links found in output directory"
+          fi
+          
+          # Show structure and size
+          echo "=== OUTPUT STRUCTURE ==="
+          find output -type f | sort
+          du -sh output
+      
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'output'
+          
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
