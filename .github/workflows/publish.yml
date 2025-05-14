@@ -101,14 +101,28 @@ jobs:
           done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Copy firmwares to output
+      - name: Copy firmware metadata to output (without binaries)
         run: |
           version=${{ needs.set-version.outputs.version }}
           firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
           for name in "${firmwares[@]}"; do
-            mkdir -p output/"$name"
-            cp -r "$name"/"$version"/* output/"$name"/
+            mkdir -p output/"$name"/"$version"
+            # Only copy specific files, not all firmware binaries
+            find "$name"/"$version" -name "*.json" -o -name "*.md" -o -name "*.html" | xargs -I{} cp --no-preserve=links {} output/"$name"/"$version"/
+            # Create links to GitHub release for downloading binaries
+            echo "Firmware binaries are available in the GitHub release: ${{ needs.set-version.outputs.html_url }}" > output/"$name"/"$version"/download_note.txt
           done
+          
+      - name: Check artifact size
+        run: |
+          # Check if the output directory size is approaching limits
+          output_size=$(du -sh output | cut -f1)
+          echo "GitHub Pages artifact size: $output_size"
+          # Fail if larger than 900MB (approaching 1GB is concerning, 10GB is the hard limit)
+          if [ $(du -s output | cut -f1) -gt 900000 ]; then
+            echo "ERROR: GitHub Pages artifact is too large ($output_size)"
+            exit 1
+          fi
       - name: Download site artifact
         uses: actions/download-artifact@v4
         with:
