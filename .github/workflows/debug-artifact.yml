@@ -1,0 +1,122 @@
+name: Debug GitHub Pages Artifact
+
+# Manual trigger with optional inputs
+on:
+  workflow_dispatch:
+    inputs:
+      core_yaml_path:
+        description: 'Path to Core.yaml file'
+        required: true
+        default: 'Integrations/ESPHome/Core.yaml'
+      firmwares_json:
+        description: 'JSON string describing firmwares'
+        required: true
+        default: '[{"yaml": "Integrations/ESPHome/TEMP_PRO-1_ETH.yaml", "name": "firmware-e"}, {"yaml": "Integrations/ESPHome/TEMP_PRO-1_W.yaml", "name": "firmware-w"}]'
+
+permissions:
+  contents: read
+  pages: write
+
+jobs:
+  debug-artifact:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: System Information
+        run: |
+          echo "=== System Information ==="
+          echo "Operating System: $(uname -a)"
+          echo "Disk Space:"
+          df -h
+          echo "Memory:"
+          free -h
+          echo "GitHub Runner Environment:"
+          env | grep GITHUB
+          
+      - name: Analyze Repository Structure
+        run: |
+          echo "=== Repository Structure ==="
+          echo "Top level directories:"
+          ls -lah
+          echo "Total repository size:"
+          du -sh .
+          echo "Largest directories:"
+          du -h --max-depth=2 | sort -hr | head -10
+          
+      - name: Check for Problematic Files
+        run: |
+          echo "=== Checking for Problematic Files ==="
+          echo "Symlinks:"
+          find . -type l | tee symlinks.txt
+          echo "Found $(wc -l < symlinks.txt) symlinks"
+          
+          echo "Hard links (files with multiple links):"
+          find . -type f -links +1 | tee hardlinks.txt
+          echo "Found $(wc -l < hardlinks.txt) files with multiple hard links"
+          
+          echo "Largest files:"
+          find . -type f -size +10M | xargs ls -lh | sort -k 5 -hr
+          
+          echo "Binary files:"
+          find . -type f -exec file {} \; | grep -i "executable\|binary"
+          
+      - name: Mock Output Creation
+        run: |
+          echo "=== Creating Mock Output ==="
+          # Create directories
+          mkdir -p output
+          
+          # Copy static content
+          if [ -d "static" ]; then
+            cp -r static/* output/
+          fi
+          
+          # Process firmware metadata (without actual downloads)
+          firmwares=($(echo '${{ github.event.inputs.firmwares_json }}' | jq -r '.[].name'))
+          for name in "${firmwares[@]}"; do
+            mkdir -p output/"$name"/latest
+            echo "Manifest would be here" > output/"$name"/latest/manifest.json
+            echo "Firmware binary would be here (approx 1MB)" > output/"$name"/latest/firmware.bin
+          done
+          
+      - name: Analyze Output Structure
+        run: |
+          echo "=== Output Structure ==="
+          echo "Directory structure:"
+          find output -type f | sort
+          
+          echo "Total size:"
+          du -sh output
+          
+          echo "Checking for symlinks in output:"
+          find output -type l
+          
+          echo "Checking for hard links in output:"
+          find output -type f -links +1
+          
+      - name: Generate Debug Report
+        run: |
+          {
+            echo "# GitHub Pages Artifact Debug Report"
+            echo "Generated: $(date)"
+            echo ""
+            echo "## Repository Stats"
+            echo "Total size: $(du -sh . | cut -f1)"
+            echo "Number of files: $(find . -type f | wc -l)"
+            echo "Number of symlinks: $(find . -type l | wc -l)"
+            echo "Number of hard links: $(find . -type f -links +1 | wc -l)"
+            echo ""
+            echo "## Mock Output Stats"
+            echo "Total size: $(du -sh output | cut -f1)"
+            echo "Number of files: $(find output -type f | wc -l)"
+            echo "Number of symlinks: $(find output -type l | wc -l)"
+            echo "Number of hard links: $(find output -type f -links +1 | wc -l)"
+          } > debug-report.md
+          
+      - name: Upload Debug Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-report
+          path: debug-report.md

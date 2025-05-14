@@ -83,46 +83,186 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: Download firmwares
+      
+      - name: Debug - Show environment
         run: |
+          echo "=== Environment Information ==="
+          echo "Working Directory: $(pwd)"
+          echo "Disk Space:"
+          df -h
+          echo "Memory:"
+          free -h
+          
+      - name: Download firmwares with more careful handling
+        run: |
+          echo "=== Starting firmware download ==="
+          # Create a temporary directory for downloads
+          mkdir -p temp_downloads
+          
+          # Process each firmware
           firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
           for name in "${firmwares[@]}"; do
-            gh run download -n "$name" -D "$name"
-          done
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Zip and upload firmwares
-        run: |
-          version=${{ needs.set-version.outputs.version }}
-          firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
-          for name in "${firmwares[@]}"; do
-            zip -r "$name.zip" "$name"
-            gh release upload --clobber "$version" "$name.zip"
-          done
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Copy firmware metadata to output (without binaries)
-        run: |
-          version=${{ needs.set-version.outputs.version }}
-          firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
-          for name in "${firmwares[@]}"; do
-            mkdir -p output/"$name"/"$version"
-            # Only copy specific files, not all firmware binaries
-            find "$name"/"$version" -name "*.json" -o -name "*.md" -o -name "*.html" | xargs -I{} cp --no-preserve=links {} output/"$name"/"$version"/
-            # Create links to GitHub release for downloading binaries
-            echo "Firmware binaries are available in the GitHub release: ${{ needs.set-version.outputs.html_url }}" > output/"$name"/"$version"/download_note.txt
+            echo "Downloading firmware: $name"
+            
+            # Download to temporary location first
+            gh run download -n "$name" -D "temp_downloads/$name"
+            
+            # Create clean target directory
+            mkdir -p "$name"
+            
+            # Copy only necessary files, avoiding symlinks
+            echo "Copying files without preserving symlinks for $name"
+            cp -r --no-preserve=links "temp_downloads/$name"/* "$name"/
+            
+            # Verify no symlinks were copied
+            symlinks=$(find "$name" -type l | wc -l)
+            if [ "$symlinks" -gt 0 ]; then
+              echo "WARNING: Found symlinks after copy. Removing them..."
+              find "$name" -type l -delete
+            fi
+            
+            # Check size
+            echo "Size of $name:"
+            du -sh "$name"
           done
           
-      - name: Check artifact size
+          # Clean up temporary downloads
+          rm -rf temp_downloads
+          
+          echo "=== Firmware download complete ==="
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare, zip and upload firmwares
         run: |
-          # Check if the output directory size is approaching limits
-          output_size=$(du -sh output | cut -f1)
-          echo "GitHub Pages artifact size: $output_size"
-          # Fail if larger than 900MB (approaching 1GB is concerning, 10GB is the hard limit)
-          if [ $(du -s output | cut -f1) -gt 900000 ]; then
-            echo "ERROR: GitHub Pages artifact is too large ($output_size)"
+          version=${{ needs.set-version.outputs.version }}
+          firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
+          
+          for name in "${firmwares[@]}"; do
+            echo "=== Processing $name for release packaging ==="
+            
+            # Create clean temporary directory for release artifacts
+            mkdir -p "clean_release_$name"
+            
+            # Only copy specific file types needed for release
+            echo "Copying only necessary files..."
+            find "$name" -type f \( -name "*.json" -o -name "*.bin" -o -name "*.md" -o -name "*.html" \) | while read file; do
+              # Create target directory
+              target_dir="clean_release_$name/$(dirname "${file#$name/}")"
+              mkdir -p "$target_dir"
+              
+              # Copy file without preserving links
+              cp --no-preserve=links "$file" "$target_dir/"
+              echo "Copied $file"
+            done
+            
+            # Check for any problematic files
+            echo "Checking for symlinks in release package..."
+            symlinks=$(find "clean_release_$name" -type l | wc -l)
+            if [ "$symlinks" -gt 0 ]; then
+              echo "WARNING: Found symlinks in release files. Removing them..."
+              find "clean_release_$name" -type l -delete
+            fi
+            
+            # Create zip with relative paths only (avoid absolute paths)
+            echo "Creating release zip file..."
+            (cd "clean_release_$name" && zip -r "../$name.zip" .)
+            
+            # Get size of zip file
+            zip_size=$(du -h "$name.zip" | cut -f1)
+            echo "Release zip size: $zip_size"
+            
+            # Upload to GitHub release
+            echo "Uploading to GitHub release..."
+            gh release upload --clobber "$version" "$name.zip"
+            
+            # Clean up
+            rm -rf "clean_release_$name"
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Debug - List all files to be packaged with sizes
+        run: |
+          echo "=== Listing files with sizes in current directory ==="
+          find . -type f -not -path "./node_modules/*" -not -path "./output/*" -exec du -h {} \;
+          
+      - name: Debug - Check for symlinks and special files
+        run: |
+          echo "=== Checking for symlinks and special files ==="
+          find . -type l -o -type p -o -type s -o -type b -o -type c
+          
+      - name: Clean and create fresh output directory
+        run: |
+          rm -rf output
+          mkdir -p output
+      
+      - name: Create minimal GitHub Pages artifact
+        run: |
+          version=${{ needs.set-version.outputs.version }}
+          
+          # Copy static HTML/CSS/JS content
+          mkdir -p output
+          cp -r static/* output/
+          
+          # Create firmware directories with minimal files
+          firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
+          for name in "${firmwares[@]}"; do
+            echo "Processing firmware: $name"
+            
+            # Create directory structure
+            mkdir -p output/"$name"/"$version"
+            
+            # Only copy manifest.json and other essential web assets
+            if [ -f "$name/$version/manifest.json" ]; then
+              echo "Copying manifest.json for $name"
+              cp "$name/$version/manifest.json" output/"$name"/"$version"/
+            fi
+            
+            # Copy only necessary files (.json, .bin files needed for ESP Web Tools)
+            find "$name"/"$version" -name "manifest.json" -o -name "*.bin" | while read file; do
+              target_file="output/${file#*/}"
+              # Create directory if it doesn't exist
+              mkdir -p "$(dirname "$target_file")"
+              # Copy file without preserving links
+              cp --no-preserve=links "$file" "$target_file"
+              echo "Copied $file to $target_file"
+            done
+            
+            # Create note about GitHub release
+            echo "Firmware binaries are also available in the GitHub release: ${{ needs.set-version.outputs.html_url }}" > output/"$name"/"$version"/download_note.txt
+          done
+          
+      - name: Debug - Show output directory structure and sizes
+        run: |
+          echo "=== Output Directory Structure ==="
+          find output -type f | sort
+          
+          echo "=== Output Directory Sizes ==="
+          du -h -d 3 output
+          
+      - name: Check artifacts for problematic files
+        run: |
+          echo "=== Checking output directory for symlinks ==="
+          symlinks=$(find output -type l | wc -l)
+          if [ "$symlinks" -gt 0 ]; then
+            echo "ERROR: Found $symlinks symlinks in output directory!"
+            find output -type l
             exit 1
           fi
+          
+          # Check if the output directory size is approaching limits
+          output_size=$(du -sh output | cut -f1)
+          output_size_kb=$(du -s output | cut -f1)
+          echo "GitHub Pages artifact size: $output_size"
+          
+          # Fail if larger than 500MB (well below the 10GB limit, but large enough for most projects)
+          if [ "$output_size_kb" -gt 500000 ]; then
+            echo "ERROR: GitHub Pages artifact is too large ($output_size)"
+            echo "Largest files:"
+            find output -type f -exec du -h {} \; | sort -hr | head -n 20
+            exit 1
+          fi
+          
+          echo "Artifact size check passed: $output_size"
       - name: Download site artifact
         uses: actions/download-artifact@v4
         with:
