@@ -172,12 +172,21 @@ jobs:
           version=${{ needs.set-version.outputs.version }}
           firmwares=($(echo '${{ inputs.firmwares_json }}' | jq -r '.[].name'))
           for name in "${firmwares[@]}"; do
+            # Create temporary directory for release packaging
             tmp_release=$(mktemp -d)
             mkdir -p "$tmp_release/$version"
             cp -R --dereference "$name/$version"/* "$tmp_release/$version/"
-            (cd "$tmp_release" && zip -r "../$name.zip" .)
-            gh release upload --clobber "$version" "$name.zip"
+            
+            # Create zip file with absolute path to ensure proper location
+            zip_file="$(pwd)/$name.zip"
+            (cd "$tmp_release" && zip -r "$zip_file" .)
+            
+            # Upload using full path to zip file
+            gh release upload --clobber "$version" "$zip_file"
+            
+            # Clean up
             rm -rf "$tmp_release"
+            rm -f "$zip_file"
           done
       
       - name: Download GitHub Pages artifact

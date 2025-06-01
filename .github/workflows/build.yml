@@ -1,20 +1,236 @@
+name: Build, Release and Publish Firmware
+
 on:
   workflow_call:
     inputs:
-      file:
+      device-name:
+        description: 'Device name (e.g., btn-1, r-pro-1)'
+        required: true
+        type: string
+      yaml-files:
+        description: 'YAML file(s) to build (multiline string for multiple files)'
+        required: true
+        type: string
+      core-yaml-path:
+        description: 'Path to Core.yaml for version extraction'
         required: true
         type: string
       esphome-version:
-        required: true
+        description: 'ESPHome version to use (stable, beta, dev)'
+        required: false
         type: string
+        default: 'stable'
+      check-yaml-changes:
+        description: 'Whether to check for YAML changes before building'
+        required: false
+        type: boolean
+        default: true
+      publish-to-pages:
+        description: 'Whether to publish to GitHub Pages'
+        required: false
+        type: boolean
+        default: true
+      has-installer:
+        description: 'Whether the device has an index.html installer'
+        required: false
+        type: boolean
+        default: true
+      installer-path:
+        description: 'Path to index.html installer (relative to repo root, e.g., "static" or ".")'
+        required: false
+        type: string
+        default: ''
+
+    outputs:
+      version:
+        description: 'The version extracted from Core.yaml'
+        value: ${{ jobs.set-version.outputs.version }}
+      upload_url:
+        description: 'The upload URL from release drafter'
+        value: ${{ jobs.set-version.outputs.upload_url }}
+      html_url:
+        description: 'The HTML URL from release drafter'
+        value: ${{ jobs.set-version.outputs.html_url }}
 
 jobs:
-  build:
+  check-for-yaml:
+    name: Check for YAML Changes
     runs-on: ubuntu-latest
+    outputs:
+      yaml_changed: ${{ steps.check.outputs.yaml_changed }}
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
-      - name: Build ESPHome firmware
-        uses: esphome/build-action@v6
         with:
-          yaml-file: ${{ inputs.file }}
+          fetch-depth: 2
+
+      - name: Find .yaml Changes in Last PR Merge
+        id: check
+        run: |
+          if [ "${{ inputs.check-yaml-changes }}" = "false" ]; then
+            echo "yaml_changed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          BASE_COMMIT=$(git rev-parse HEAD^1)
+          MERGE_COMMIT=$(git rev-parse HEAD)
+
+          if git diff --name-only $BASE_COMMIT $MERGE_COMMIT | grep -q '\.yaml$'; then
+            echo "yaml_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "yaml_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  set-version:
+    name: Set Version
+    runs-on: ubuntu-latest
+    needs: [check-for-yaml]
+    if: needs.check-for-yaml.outputs.yaml_changed == 'true'
+
+    outputs:
+      version: ${{ steps.read_version.outputs.version }}
+      upload_url: ${{ steps.run-release-drafter.outputs.upload_url }}
+      body: ${{ steps.run-release-drafter.outputs.body }}
+      html_url: ${{ steps.run-release-drafter.outputs.html_url }}
+    
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read version from YAML file
+        id: read_version
+        run: |
+          version=$(awk '/substitutions:/ {found=1} found && /version:/ {print $2; exit}' ${{ inputs.core-yaml-path }} | tr -d '"')
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "Detected version: $version"
+
+      - name: Fetch Last Merged PR Body
+        id: last_pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_INFO=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls?state=closed&sort=updated&direction=desc&per_page=1")
+          PR_BODY=$(echo "$PR_INFO" | jq -r '.[0].body')
+          echo "$PR_BODY" > pr_body.txt
+
+      - name: 🚀 Run Release Drafter
+        id: run-release-drafter
+        uses: release-drafter/release-drafter@v6
+        with:
+          version: ${{ steps.read_version.outputs.version }}
+          publish: true
+          tag: ${{ steps.read_version.outputs.version }}
+          name: Release ${{ steps.read_version.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-firmware:
+    name: Build Firmware
+    uses: esphome/workflows/.github/workflows/build.yml@main
+    needs:
+      - check-for-yaml
+      - set-version
+    if: needs.check-for-yaml.outputs.yaml_changed == 'true'
+    with:
+      files: ${{ inputs.yaml-files }}
+      esphome-version: ${{ inputs.esphome-version }}
+      combined-name: firmware
+      release-summary: ${{ needs.set-version.outputs.body }}
+      release-version: ${{ needs.set-version.outputs.version }}
+
+  publish:
+    name: Publish to GitHub Pages
+    runs-on: ubuntu-latest
+    needs:
+      - build-firmware
+      - set-version
+    if: needs.check-for-yaml.outputs.yaml_changed == 'true' && inputs.publish-to-pages && github.run_attempt == 1
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Download Firmware
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: firmware
+
+      # Zip firmware
+      - name: Zip firmware
+        run: |
+          zip -r firmware.zip firmware
+
+      # Upload firmware.zip as an asset
+      - name: Upload firmware.zip
+        id: upload-firmware
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.set-version.outputs.upload_url }}
+          asset_path: firmware.zip
+          asset_name: firmware.zip
+          asset_content_type: application/zip
+
+      - name: Copy firmware and manifest
+        run: |-
+          mkdir -p output/firmware
+          cp -r firmware/${{ needs.build-firmware.outputs.version }}/* output/firmware/
+
+      # Copy the index.html installer to output (if it exists)
+      - name: Copy installer
+        if: inputs.has-installer
+        run: |-
+          # Check multiple locations for index.html
+          INSTALLER_FOUND=false
+          
+          # If installer-path is specified, check there first
+          if [ -n "${{ inputs.installer-path }}" ]; then
+            if [ -f "${{ inputs.installer-path }}/index.html" ]; then
+              echo "Found index.html in specified path: ${{ inputs.installer-path }}"
+              cp "${{ inputs.installer-path }}/index.html" output/
+              INSTALLER_FOUND=true
+            fi
+          fi
+          
+          # If not found yet, check common locations
+          if [ "$INSTALLER_FOUND" = "false" ]; then
+            # Check static folder
+            if [ -f "static/index.html" ]; then
+              echo "Found index.html in static folder"
+              cp "static/index.html" output/
+              INSTALLER_FOUND=true
+            # Check root folder
+            elif [ -f "index.html" ]; then
+              echo "Found index.html in root folder"
+              cp "index.html" output/
+              INSTALLER_FOUND=true
+            fi
+          fi
+          
+          if [ "$INSTALLER_FOUND" = "false" ]; then
+            echo "No index.html found in any location, skipping installer copy"
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: output
+          retention-days: 1
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
