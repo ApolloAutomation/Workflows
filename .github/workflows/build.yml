@@ -277,6 +277,66 @@ jobs:
           echo "Output structure:"
           find output -type f -name "*.bin" | sort
 
+      # Check and preserve existing manifest files from ESPHome
+      - name: Check and preserve manifest files
+        run: |
+          VERSION="${{ needs.set-version.outputs.version }}"
+          RELEASE_NOTES='${{ needs.set-version.outputs.body }}'
+          
+          # Process each variant directory
+          for variant_dir in output/*/; do
+            if [ -d "$variant_dir" ] && [ "$(basename "$variant_dir")" != "output" ]; then
+              variant_name=$(basename "$variant_dir")
+              
+              # Skip if no .bin files in directory
+              if ! ls "$variant_dir"/*.bin >/dev/null 2>&1; then
+                continue
+              fi
+              
+              # Check if manifest.json already exists (from ESPHome)
+              if [ -f "$variant_dir/manifest.json" ]; then
+                echo "Found existing manifest.json for $variant_name from ESPHome build"
+                echo "Existing manifest.json content:"
+                cat "$variant_dir/manifest.json" | jq .
+              else
+                echo "No existing manifest.json found for $variant_name, creating one"
+                
+                # Create manifest.json for this variant
+                cat > "$variant_dir/manifest.json" <<EOF
+          {
+            "version": "$VERSION",
+            "variant": "$variant_name",
+            "files": [
+          EOF
+                
+                # Add all .bin files for this variant
+                file_first=true
+                for bin_file in "$variant_dir"/*.bin; do
+                  if [ -f "$bin_file" ]; then
+                    filename=$(basename "$bin_file")
+                    if [ "$file_first" = false ]; then
+                      echo "," >> "$variant_dir/manifest.json"
+                    fi
+                    file_first=false
+                    echo -n '    "'$filename'"' >> "$variant_dir/manifest.json"
+                  fi
+                done
+                
+                # Close the JSON
+                cat >> "$variant_dir/manifest.json" <<EOF
+
+            ],
+            "notes": $(echo "$RELEASE_NOTES" | jq -Rs .)
+          }
+          EOF
+                
+                # Display manifest for debugging
+                echo "Created new manifest.json for $variant_name:"
+                cat "$variant_dir/manifest.json" | jq .
+              fi
+            fi
+          done
+
       # Zip all firmware files
       - name: Zip all firmware files
         run: |
