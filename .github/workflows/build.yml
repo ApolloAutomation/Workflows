@@ -346,57 +346,6 @@ jobs:
             echo "No index.html found in any location, skipping installer copy"
           fi
 
-      # Create a manifest of all firmware variants
-      - name: Create firmware manifest
-        run: |
-          VERSION="${{ needs.set-version.outputs.version }}"
-          
-          # Create manifest.json with all firmware variants
-          echo '{"version":"'$VERSION'","variants":[' > output/manifest.json
-          
-          first=true
-          for variant_dir in output/*/; do
-            if [ -d "$variant_dir" ] && [ "$(basename "$variant_dir")" != "output" ]; then
-              variant_name=$(basename "$variant_dir")
-              
-              # Skip if no .bin files in directory
-              if ! ls "$variant_dir"/*.bin >/dev/null 2>&1; then
-                continue
-              fi
-              
-              # Add comma if not first
-              if [ "$first" = false ]; then
-                echo "," >> output/manifest.json
-              fi
-              first=false
-              
-              # Add variant info
-              echo -n '{"name":"'$variant_name'",' >> output/manifest.json
-              echo -n '"files":[' >> output/manifest.json
-              
-              # List all .bin files for this variant
-              file_first=true
-              for bin_file in "$variant_dir"/*.bin; do
-                if [ -f "$bin_file" ]; then
-                  filename=$(basename "$bin_file")
-                  if [ "$file_first" = false ]; then
-                    echo -n "," >> output/manifest.json
-                  fi
-                  file_first=false
-                  echo -n '"'$filename'"' >> output/manifest.json
-                fi
-              done
-              
-              echo -n ']}' >> output/manifest.json
-            fi
-          done
-          
-          echo ']}' >> output/manifest.json
-          
-          # Display manifest for debugging
-          echo "Created manifest.json:"
-          cat output/manifest.json | jq .
-
       - uses: actions/upload-pages-artifact@v3
         with:
           path: output
