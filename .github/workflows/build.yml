@@ -147,7 +147,8 @@ jobs:
     needs:
       - build-firmware
       - set-version
-    if: needs.check-for-yaml.outputs.yaml_changed == 'true' && inputs.publish-to-pages && github.run_attempt == 1
+    # Remove github.run_attempt == 1 to allow uploads on retries
+    if: needs.check-for-yaml.outputs.yaml_changed == 'true' && inputs.publish-to-pages
     permissions:
       contents: write
       pages: write
@@ -172,15 +173,42 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.set-version.outputs.version }}" \
-            firmware.zip \
-            --repo "${{ github.repository }}" \
-            --clobber
+          VERSION="${{ needs.set-version.outputs.version }}"
+          
+          # Check if release exists
+          if gh release view "$VERSION" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            # Upload with error handling
+            if gh release upload "$VERSION" \
+              firmware.zip \
+              --repo "${{ github.repository }}" \
+              --clobber; then
+              echo "Successfully uploaded firmware.zip to release $VERSION"
+            else
+              echo "Failed to upload firmware.zip to release $VERSION"
+              exit 1
+            fi
+          else
+            echo "Release $VERSION does not exist!"
+            echo "Available releases:"
+            gh release list --repo "${{ github.repository }}" --limit 5
+            exit 1
+          fi
 
       - name: Copy firmware and manifest
         run: |-
           mkdir -p output/firmware
-          cp -r firmware/${{ needs.build-firmware.outputs.version }}/* output/firmware/
+          # ESPHome workflow structure might vary, so let's handle different cases
+          if [ -d "firmware/${{ needs.set-version.outputs.version }}" ]; then
+            echo "Found versioned firmware directory"
+            cp -r firmware/${{ needs.set-version.outputs.version }}/* output/firmware/
+          elif [ -d "firmware" ] && [ "$(ls -A firmware)" ]; then
+            echo "Copying all firmware files"
+            cp -r firmware/* output/firmware/
+          else
+            echo "ERROR: No firmware files found!"
+            ls -la firmware/
+            exit 1
+          fi
 
       # Copy the index.html installer to output (if it exists)
       - name: Copy installer
