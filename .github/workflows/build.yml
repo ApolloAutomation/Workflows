@@ -45,9 +45,6 @@ on:
       version:
         description: 'The version extracted from Core.yaml'
         value: ${{ jobs.set-version.outputs.version }}
-      upload_url:
-        description: 'The upload URL from release drafter'
-        value: ${{ jobs.set-version.outputs.upload_url }}
       html_url:
         description: 'The HTML URL from release drafter'
         value: ${{ jobs.set-version.outputs.html_url }}
@@ -89,7 +86,6 @@ jobs:
 
     outputs:
       version: ${{ steps.read_version.outputs.version }}
-      upload_url: ${{ steps.run-release-drafter.outputs.upload_url }}
       body: ${{ steps.run-release-drafter.outputs.body }}
       html_url: ${{ steps.run-release-drafter.outputs.html_url }}
     
@@ -171,17 +167,15 @@ jobs:
         run: |
           zip -r firmware.zip firmware
 
-      # Upload firmware.zip as an asset
-      - name: Upload firmware.zip
-        id: upload-firmware
-        uses: actions/upload-release-asset@v1
+      # Upload firmware.zip as an asset using GitHub CLI
+      - name: Upload firmware.zip to Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.set-version.outputs.upload_url }}
-          asset_path: firmware.zip
-          asset_name: firmware.zip
-          asset_content_type: application/zip
+        run: |
+          gh release upload "${{ needs.set-version.outputs.version }}" \
+            firmware.zip \
+            --repo "${{ github.repository }}" \
+            --clobber
 
       - name: Copy firmware and manifest
         run: |-
