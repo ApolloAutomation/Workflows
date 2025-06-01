@@ -277,38 +277,61 @@ jobs:
           echo "Output structure:"
           find output -type f -name "*.bin" | sort
 
-      # Zip all firmware files
-      - name: Zip all firmware files
+      # Create individual zip files for each firmware variant
+      - name: Create individual firmware zip files
         run: |
-          cd firmware-all
-          zip -r ../firmware.zip .
-          cd ..
+          # Process each variant directory in output
+          for variant_dir in output/*/; do
+            if [ -d "$variant_dir" ] && [ "$variant_dir" != "output/*/" ]; then
+              variant_name=$(basename "$variant_dir")
+              echo "Creating zip for $variant_name"
+              
+              # Create zip file for this variant
+              cd "$variant_dir"
+              zip -r "../../${variant_name}.zip" .
+              cd ../..
+              
+              echo "Created ${variant_name}.zip"
+            fi
+          done
+          
+          # List created zip files
+          echo "Created zip files:"
+          ls -la *.zip || echo "No zip files found"
 
-      # Upload firmware.zip as an asset using GitHub CLI
-      - name: Upload firmware.zip to Release
+      # Upload individual firmware zip files as release assets
+      - name: Upload firmware zip files to Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.set-version.outputs.version }}"
           
           # Check if release exists
-          if gh release view "$VERSION" --repo "${{ github.repository }}" > /dev/null 2>&1; then
-            # Upload with error handling
-            if gh release upload "$VERSION" \
-              firmware.zip \
-              --repo "${{ github.repository }}" \
-              --clobber; then
-              echo "Successfully uploaded firmware.zip to release $VERSION"
-            else
-              echo "Failed to upload firmware.zip to release $VERSION"
-              exit 1
-            fi
-          else
+          if ! gh release view "$VERSION" --repo "${{ github.repository }}" > /dev/null 2>&1; then
             echo "Release $VERSION does not exist!"
             echo "Available releases:"
             gh release list --repo "${{ github.repository }}" --limit 5
             exit 1
           fi
+          
+          # Upload each zip file
+          for zip_file in *.zip; do
+            if [ -f "$zip_file" ]; then
+              echo "Uploading $zip_file to release $VERSION"
+              
+              if gh release upload "$VERSION" \
+                "$zip_file" \
+                --repo "${{ github.repository }}" \
+                --clobber; then
+                echo "Successfully uploaded $zip_file"
+              else
+                echo "Failed to upload $zip_file"
+                exit 1
+              fi
+            fi
+          done
+          
+          echo "All firmware zip files uploaded successfully"
 
 
       # Copy the index.html installer to output (if it exists)
