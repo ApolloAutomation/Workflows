@@ -151,7 +151,7 @@ jobs:
           # Parse firmware-names mapping
           declare -A name_mapping
           if [ -n "${{ inputs.firmware-names }}" ]; then
-            IFS=',' read -ra mappings <<< '${{ inputs.firmware-names }}'
+            IFS=',' read -ra mappings <<< "${{ inputs.firmware-names }}"
             for mapping in "${mappings[@]}"; do
               IFS=':' read -r pattern name <<< "$mapping"
               name_mapping["$pattern"]="$name"
@@ -171,22 +171,12 @@ jobs:
             filename=$(basename "$yaml_file")
             
             # Check each pattern in the mapping
-            echo "DEBUG: Processing filename: $filename"
-            echo "DEBUG: Available patterns: ${!name_mapping[@]}"
-            
-            # Extract pattern from filename: everything after last "-" and before ".yaml"
-            pattern=$(basename "$yaml_file" .yaml | sed 's/.*-//')
-            echo "DEBUG: Extracted pattern '$pattern' from filename '$filename'"
-            
-            if [ -n "${name_mapping[$pattern]}" ]; then
-              firmware_name="${name_mapping[$pattern]}"
-              echo "DEBUG: Pattern '$pattern' matched mapping -> firmware: $firmware_name"
-            else
-              firmware_name="$pattern"
-              echo "DEBUG: No mapping found, using pattern as firmware name: $firmware_name"
-            fi
-            
-            echo "DEBUG: Final firmware_name for $filename: $firmware_name"
+            for pattern in "${!name_mapping[@]}"; do
+              if [[ "$filename" == *"$pattern"* ]]; then
+                firmware_name="${name_mapping[$pattern]}"
+                break
+              fi
+            done
             
             # Add comma if not first item
             if [ "$first" = true ]; then
