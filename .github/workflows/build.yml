@@ -369,7 +369,7 @@ jobs:
             echo "No index.html found in any location, skipping installer copy"
           fi
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: output
           retention-days: 1
