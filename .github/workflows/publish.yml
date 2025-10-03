@@ -57,7 +57,7 @@ jobs:
     strategy:
       matrix:
         firmware: ${{ fromJson(inputs.firmwares_json) }}
-    uses: esphome/workflows/.github/workflows/build.yml@2025.8.1
+    uses: esphome/workflows/.github/workflows/build.yml@2025.10.0
     with:
       files: ${{ matrix.firmware.yaml }}
       esphome-version: stable
@@ -236,7 +236,7 @@ jobs:
         uses: actions/configure-pages@v5
         
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: 'output'
           
