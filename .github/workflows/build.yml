@@ -206,7 +206,7 @@ jobs:
 
   build-firmware:
     name: Build Firmware (${{ matrix.firmware_name }})
-    uses: esphome/workflows/.github/workflows/build.yml@2025.8.1
+    uses: esphome/workflows/.github/workflows/build.yml@2025.10.0
     needs:
       - check-for-yaml
       - set-version
@@ -239,7 +239,7 @@ jobs:
 
       # Download all firmware artifacts
       - name: Download all firmware artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v6
         with:
           path: firmware-artifacts
           pattern: firmware*
@@ -379,7 +379,7 @@ jobs:
             echo "No index.html found in any location, skipping installer copy"
           fi
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v4
         with:
           path: output
           retention-days: 1
