@@ -25,7 +25,7 @@ jobs:
       html_url: ${{ steps.run-release-drafter.outputs.html_url }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Read version from YAML file
         id: read_version
         run: |
@@ -57,7 +57,7 @@ jobs:
     strategy:
       matrix:
         firmware: ${{ fromJson(inputs.firmwares_json) }}
-    uses: esphome/workflows/.github/workflows/build.yml@2025.8.1
+    uses: esphome/workflows/.github/workflows/build.yml@2025.10.0
     with:
       files: ${{ matrix.firmware.yaml }}
       esphome-version: stable
@@ -70,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       
       - name: Debug repository structure
         run: |
@@ -125,7 +125,7 @@ jobs:
           fi
           
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: github-pages
           path: output
@@ -135,7 +135,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         
       - name: Debug link analysis
         run: |
@@ -236,7 +236,7 @@ jobs:
         uses: actions/configure-pages@v5
         
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: 'output'
           
