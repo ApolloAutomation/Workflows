@@ -206,7 +206,7 @@ jobs:
 
   build-firmware:
     name: Build Firmware (${{ matrix.firmware_name }})
-    uses: esphome/workflows/.github/workflows/build.yml@2025.8.1
+    uses: esphome/workflows/.github/workflows/build.yml@2025.10.0
     needs:
       - check-for-yaml
       - set-version
