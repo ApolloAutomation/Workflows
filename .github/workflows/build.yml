@@ -239,7 +239,7 @@ jobs:
 
       # Download all firmware artifacts
       - name: Download all firmware artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           path: firmware-artifacts
           pattern: firmware*
