@@ -243,6 +243,7 @@ jobs:
         with:
           path: firmware-artifacts
           pattern: firmware*
+          merge-multiple: false
 
       # Create output directory structure
       - name: Create output directory structure
