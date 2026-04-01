@@ -123,7 +123,7 @@ jobs:
 
       - name: 🚀 Run Release Drafter
         id: run-release-drafter
-        uses: release-drafter/release-drafter@v6
+        uses: release-drafter/release-drafter@v7
         with:
           version: ${{ steps.read_version.outputs.version }}
           publish: true
@@ -239,7 +239,7 @@ jobs:
 
       # Download all firmware artifacts
       - name: Download all firmware artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: firmware-artifacts
           pattern: firmware*
@@ -399,8 +399,8 @@ jobs:
           retention-days: 1
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
