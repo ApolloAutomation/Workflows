@@ -255,17 +255,30 @@ jobs:
       - name: Organize firmware files by variant
         run: |
           VERSION="${{ needs.set-version.outputs.version }}"
-          
+          FIRMWARE_NAMES='${{ inputs.firmware-names }}'
+
           # Process each firmware artifact
           for artifact_dir in firmware-artifacts/*/; do
             if [ -d "$artifact_dir" ]; then
               # Extract artifact name (firmware variant name)
               artifact_name=$(basename "$artifact_dir")
+
+              # Fix: download-artifact@v4 extracts single artifacts without a wrapper
+              # directory, so the dir name is the version instead of the firmware name
+              if [ "$artifact_name" = "$VERSION" ]; then
+                expected_name="firmware"
+                if [ -n "$FIRMWARE_NAMES" ]; then
+                  expected_name=$(echo "$FIRMWARE_NAMES" | cut -d',' -f1 | cut -d':' -f2)
+                fi
+                echo "Detected unwrapped single artifact: renaming '$artifact_name' to '$expected_name'"
+                artifact_name="$expected_name"
+              fi
+
               echo "Processing $artifact_name"
-              
+
               # Create output directory for this variant
               mkdir -p "output/$artifact_name"
-              
+
               # Copy firmware files to variant-specific directory
               if [ -d "$artifact_dir/$VERSION" ]; then
                 echo "Found versioned firmware in $artifact_name"
@@ -274,7 +287,7 @@ jobs:
                 echo "Copying all files from $artifact_name"
                 cp -r "$artifact_dir"/* "output/$artifact_name/"
               fi
-              
+
               # Also collect all firmware for the zip file
               if [ -d "$artifact_dir/$VERSION" ]; then
                 cp -r "$artifact_dir/$VERSION"/* "firmware-all/"
