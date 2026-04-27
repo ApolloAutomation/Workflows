@@ -123,7 +123,7 @@ jobs:
 
       - name: 🚀 Run Release Drafter
         id: run-release-drafter
-        uses: release-drafter/release-drafter@v6
+        uses: release-drafter/release-drafter@v7
         with:
           version: ${{ steps.read_version.outputs.version }}
           publish: true
@@ -206,7 +206,7 @@ jobs:
 
   build-firmware:
     name: Build Firmware (${{ matrix.firmware_name }})
-    uses: esphome/workflows/.github/workflows/build.yml@2025.10.0
+    uses: esphome/workflows/.github/workflows/build.yml@2026.4.0
     needs:
       - check-for-yaml
       - set-version
@@ -239,7 +239,7 @@ jobs:
 
       # Download all firmware artifacts
       - name: Download all firmware artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: firmware-artifacts
           pattern: firmware*
@@ -393,14 +393,14 @@ jobs:
             echo "No index.html found in any location, skipping installer copy"
           fi
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: output
           retention-days: 1
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

@@ -43,7 +43,7 @@ jobs:
           echo "$PR_BODY" > pr_body.txt
       - name: Run Release Drafter
         id: run-release-drafter
-        uses: release-drafter/release-drafter@v6
+        uses: release-drafter/release-drafter@v7
         with:
           version: ${{ steps.read_version.outputs.version }}
           publish: true
@@ -57,7 +57,7 @@ jobs:
     strategy:
       matrix:
         firmware: ${{ fromJson(inputs.firmwares_json) }}
-    uses: esphome/workflows/.github/workflows/build.yml@2025.10.0
+    uses: esphome/workflows/.github/workflows/build.yml@2026.4.0
     with:
       files: ${{ matrix.firmware.yaml }}
       esphome-version: stable
@@ -125,7 +125,7 @@ jobs:
           fi
           
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: github-pages
           path: output
@@ -233,13 +233,13 @@ jobs:
           du -sh output
 
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
         
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: 'output'
           
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
