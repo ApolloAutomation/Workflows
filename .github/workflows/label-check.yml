@@ -5,13 +5,16 @@ jobs:
   label-check:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
       - name: Write PR Body to File
+        # Pass the body through an environment variable instead of
+        # interpolating it into the script, so PR content can never be
+        # executed as shell code. Required for pull_request_target callers,
+        # which run with a write token. The checkout step was removed
+        # because no repository files are used.
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          set +H
-          set +o histexpand
-          printf '%s\n' "${{ github.event.pull_request.body }}" > pr_body.txt
+          printf '%s\n' "$PR_BODY" > pr_body.txt
       - name: Determine Single Label
         id: determine_label
         run: |
