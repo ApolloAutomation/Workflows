@@ -91,7 +91,7 @@ jobs:
 
     outputs:
       version: ${{ steps.read_version.outputs.version }}
-      body: ${{ steps.run-release-drafter.outputs.body }}
+      body: ${{ steps.finalize-notes.outputs.body }}
       html_url: ${{ steps.run-release-drafter.outputs.html_url }}
     
     permissions:
@@ -131,6 +131,29 @@ jobs:
           name: Release ${{ steps.read_version.outputs.version }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Finalize release notes
+        id: finalize-notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRAFTER_BODY: ${{ steps.run-release-drafter.outputs.body }}
+          VERSION: ${{ steps.read_version.outputs.version }}
+        run: |
+          # Drop any template-generated Full Changelog line: release-drafter cannot
+          # render 4-part versions ($RESOLVED_VERSION is semver-coerced, so old
+          # templates always linked ...X.Y.Z.1). Append a correct compare link here,
+          # where the real tag is known.
+          BODY=$(printf '%s\n' "$DRAFTER_BODY" | sed '/^\*\*Full Changelog\*\*:/d')
+          PREV=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 20 --json tagName --jq "[.[].tagName | select(. != \"$VERSION\")][0]")
+          if [ -n "$PREV" ] && [ "$PREV" != "null" ]; then
+            BODY=$(printf '%s\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s' "$BODY" "$GITHUB_REPOSITORY" "$PREV" "$VERSION")
+          fi
+          gh release edit "$VERSION" --repo "$GITHUB_REPOSITORY" --notes "$BODY"
+          {
+            echo 'body<<RELEASE_NOTES_EOF'
+            printf '%s\n' "$BODY"
+            echo 'RELEASE_NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
 
   prepare-build-matrix:
     name: Prepare Build Matrix
