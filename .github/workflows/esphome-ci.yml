@@ -49,6 +49,8 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - name: Build ESPHome firmware to verify configuration
         uses: esphome/build-action@v7
         with:
