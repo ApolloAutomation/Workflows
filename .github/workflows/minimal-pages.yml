@@ -23,7 +23,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-        
+        with:
+          persist-credentials: false
+
       - name: Find and display all symlinks and hardlinks
         run: |
           echo "=== DETAILED LINK ANALYSIS ==="

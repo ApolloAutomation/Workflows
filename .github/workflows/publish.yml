@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Read version from YAML file
         id: read_version
         run: |
@@ -71,6 +73,8 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       
       - name: Debug repository structure
         run: |
@@ -136,7 +140,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
-        
+        with:
+          persist-credentials: false
+
       - name: Debug link analysis
         run: |
           find . -type l -not -path "./.git/*" -ls | tee repo_symlinks.txt
