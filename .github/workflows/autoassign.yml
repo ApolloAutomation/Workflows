@@ -1,0 +1,28 @@
+name: Auto Assign
+
+on:
+  workflow_call:
+    inputs:
+      assignees:
+        description: 'Comma-separated GitHub usernames to assign'
+        required: true
+        type: string
+      num-of-assignees:
+        description: 'How many assignees to pick from the list'
+        required: false
+        type: number
+        default: 1
+
+jobs:
+  auto-assign:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Auto-assign issue
+        uses: pozil/auto-assign-issue@v4
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          assignees: ${{ inputs.assignees }}
+          numOfAssignee: ${{ inputs.num-of-assignees }}
