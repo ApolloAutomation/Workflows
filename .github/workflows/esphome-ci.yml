@@ -1,0 +1,56 @@
+name: ESPHome CI
+
+on:
+  workflow_call:
+    inputs:
+      yaml-files:
+        description: 'ESPHome YAML file(s) to build (multiline string, one per line)'
+        required: true
+        type: string
+      esphome-versions:
+        description: 'ESPHome versions to build against (multiline string, one per line)'
+        required: false
+        type: string
+        default: |
+          stable
+          beta
+          dev
+
+jobs:
+  prepare-matrix:
+    name: Prepare Build Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.parse.outputs.files }}
+      versions: ${{ steps.parse.outputs.versions }}
+    steps:
+      - name: Parse inputs into JSON arrays
+        id: parse
+        env:
+          YAML_FILES: ${{ inputs.yaml-files }}
+          ESPHOME_VERSIONS: ${{ inputs.esphome-versions }}
+        run: |
+          files=$(printf '%s' "$YAML_FILES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          versions=$(printf '%s' "$ESPHOME_VERSIONS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Building ${{ matrix.file }} / ESPHome ${{ matrix.esphome-version }}
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        file: ${{ fromJson(needs.prepare-matrix.outputs.files) }}
+        esphome-version: ${{ fromJson(needs.prepare-matrix.outputs.versions) }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v6
+      - name: Build ESPHome firmware to verify configuration
+        uses: esphome/build-action@v7
+        with:
+          yaml-file: ${{ matrix.file }}
+          version: ${{ matrix.esphome-version }}
