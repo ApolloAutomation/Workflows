@@ -59,7 +59,7 @@ jobs:
     strategy:
       matrix:
         firmware: ${{ fromJson(inputs.firmwares_json) }}
-    uses: esphome/workflows/.github/workflows/build.yml@2026.4.1
+    uses: esphome/workflows/.github/workflows/build.yml@2026.7.0
     with:
       files: ${{ matrix.firmware.yaml }}
       esphome-version: stable
