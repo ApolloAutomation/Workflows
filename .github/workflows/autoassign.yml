@@ -4,9 +4,10 @@ on:
   workflow_call:
     inputs:
       assignees:
-        description: 'Comma-separated GitHub usernames to assign'
-        required: true
+        description: 'Comma-separated GitHub usernames to assign. Defaults to the AUTO_ASSIGNEE organization variable.'
+        required: false
         type: string
+        default: ''
       num-of-assignees:
         description: 'How many assignees to pick from the list'
         required: false
@@ -19,10 +20,19 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
+    env:
+      # Configured once at org level: Settings > Secrets and variables > Actions > Variables.
+      # vars resolves in the caller repository's context, so a repo variable overrides it.
+      ASSIGNEES: ${{ inputs.assignees || vars.AUTO_ASSIGNEE }}
     steps:
       - name: Auto-assign issue
-        uses: pozil/auto-assign-issue@v4
+        if: env.ASSIGNEES != ''
+        uses: pozil/auto-assign-issue@af6beea6bdf1e8eb373f061c5bc168681fc6d011 # v4.0.1
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          assignees: ${{ inputs.assignees }}
+          assignees: ${{ env.ASSIGNEES }}
           numOfAssignee: ${{ inputs.num-of-assignees }}
+
+      - name: No assignee configured
+        if: env.ASSIGNEES == ''
+        run: echo "::warning::No assignee set. Pass the assignees input or define the AUTO_ASSIGNEE organization variable."
