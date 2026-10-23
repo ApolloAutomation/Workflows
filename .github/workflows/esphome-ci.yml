@@ -48,7 +48,7 @@ jobs:
         esphome-version: ${{ fromJson(needs.prepare-matrix.outputs.versions) }}
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Build ESPHome firmware to verify configuration
