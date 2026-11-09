@@ -241,11 +241,17 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v6
         
+      # One artifact name per attempt: on "Re-run failed jobs" the earlier
+      # attempt's artifact is still in the run, and deploy-pages refuses to
+      # deploy when two artifacts share a name.
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:
+          name: github-pages-${{ github.run_attempt }}
           path: 'output'
           
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
