@@ -52,7 +52,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Build ESPHome firmware to verify configuration
-        uses: esphome/build-action@v7
+        # The moving v7 tag still points at v7.2.0, whose manifest step
+        # rejects chips newer than the C6 (e.g. the ESP32-P4). v7.3.0 and later
+        # read chip names from ESPHome itself.
+        uses: esphome/build-action@ae5408cdbc4f70692bf8e345c4982bca05a93667 # v8.1.0
         with:
           yaml-file: ${{ matrix.file }}
           version: ${{ matrix.esphome-version }}
