@@ -232,7 +232,9 @@ jobs:
 
   build-firmware:
     name: Build Firmware (${{ matrix.firmware_name }})
-    uses: esphome/workflows/.github/workflows/build.yml@2026.4.1
+    # 2026.10.2 runs esphome/build-action v8.1.0, which knows every chip ESPHome
+    # knows (2026.4.1 ran v7.2.0, whose manifest step rejects the ESP32-P4).
+    uses: esphome/workflows/.github/workflows/build.yml@31d160e5f0ffa0ee65d5b27cb55c153d415f2abe # 2026.10.2
     needs:
       - check-for-yaml
       - set-version
@@ -307,21 +309,25 @@ jobs:
               # Create output directory for this variant
               mkdir -p "output/$artifact_name"
 
-              # Copy firmware files to variant-specific directory
+              # Find the folder holding this variant's files. esphome/workflows
+              # 2026.7.0 and later put <combined-name>/<version>/ inside the
+              # artifact; older releases put <version>/ at its top.
               if [ -d "$artifact_dir/$VERSION" ]; then
                 echo "Found versioned firmware in $artifact_name"
-                cp -r "$artifact_dir/$VERSION"/* "output/$artifact_name/"
+                src="$artifact_dir/$VERSION"
+              elif [ -d "$artifact_dir/$artifact_name/$VERSION" ]; then
+                echo "Found versioned firmware in $artifact_name/$artifact_name"
+                src="$artifact_dir/$artifact_name/$VERSION"
               else
                 echo "Copying all files from $artifact_name"
-                cp -r "$artifact_dir"/* "output/$artifact_name/"
+                src="$artifact_dir"
               fi
 
+              # Copy firmware files to variant-specific directory
+              cp -r "$src"/* "output/$artifact_name/"
+
               # Also collect all firmware for the zip file
-              if [ -d "$artifact_dir/$VERSION" ]; then
-                cp -r "$artifact_dir/$VERSION"/* "firmware-all/"
-              else
-                cp -r "$artifact_dir"/* "firmware-all/"
-              fi
+              cp -r "$src"/* "firmware-all/"
             fi
           done
           
