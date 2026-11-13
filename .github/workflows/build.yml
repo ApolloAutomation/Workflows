@@ -58,6 +58,8 @@ jobs:
   check-for-yaml:
     name: Check for YAML Changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       yaml_changed: ${{ steps.check.outputs.yaml_changed }}
     steps:
@@ -95,11 +97,11 @@ jobs:
       body: ${{ steps.finalize-notes.outputs.body }}
       html_url: ${{ steps.run-release-drafter.outputs.html_url }}
     
+    # contents: write to publish the release and edit its notes;
+    # pull-requests: read for release-drafter and the PR body lookup.
     permissions:
       contents: write
-      pages: write
-      id-token: write
-      pull-requests: write
+      pull-requests: read
 
     steps:
       - name: Checkout code
@@ -165,6 +167,8 @@ jobs:
       - check-for-yaml
       - set-version
     if: needs.check-for-yaml.outputs.yaml_changed == 'true'
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.prepare-matrix.outputs.matrix }}
     steps:
@@ -240,6 +244,11 @@ jobs:
       - set-version
       - prepare-build-matrix
     if: needs.check-for-yaml.outputs.yaml_changed == 'true'
+    # Read-only token for the compile. The called workflow sets no permissions,
+    # so all its jobs get exactly this. Its artifact upload, download and delete
+    # steps use the run's artifact token, not this one.
+    permissions:
+      contents: read
     strategy:
       matrix: ${{ fromJson(needs.prepare-build-matrix.outputs.matrix) }}
     with:
@@ -252,7 +261,10 @@ jobs:
   publish:
     name: Publish to GitHub Pages
     runs-on: ubuntu-latest
+    # check-for-yaml is listed because the if below reads it: GitHub documents
+    # the needs context as holding direct dependencies only.
     needs:
+      - check-for-yaml
       - build-firmware
       - set-version
     # Remove github.run_attempt == 1 to allow uploads on retries
