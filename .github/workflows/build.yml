@@ -3,9 +3,10 @@ name: Build, Release and Publish Firmware
 on:
   workflow_call:
     inputs:
+      # Unused; still accepted so existing callers keep working.
       device-name:
-        description: 'Device name (e.g., btn-1, r-pro-1)'
-        required: true
+        description: 'Device name (e.g., btn-1, r-pro-1). Unused, kept for existing callers.'
+        required: false
         type: string
       yaml-files:
         description: 'YAML file(s) to build (multiline string for multiple files)'
@@ -45,6 +46,11 @@ on:
         required: false
         type: string
         default: ''
+      release-branch:
+        description: 'Only branch this workflow may release and publish from'
+        required: false
+        type: string
+        default: 'main'
 
     outputs:
       version:
@@ -63,6 +69,18 @@ jobs:
     outputs:
       yaml_changed: ${{ steps.check.outputs.yaml_changed }}
     steps:
+      # Every other job needs this one, so a refused run creates no release,
+      # tag, asset upload or Pages deploy. Catches workflow_dispatch from a
+      # feature branch, which would otherwise publish a release.
+      - name: Refuse to release from a non-release branch
+        env:
+          RELEASE_BRANCH: ${{ inputs.release-branch }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "branch" ] || [ "$GITHUB_REF_NAME" != "$RELEASE_BRANCH" ]; then
+            echo "::error::Releases publish only from '$RELEASE_BRANCH' (this run: $GITHUB_REF_TYPE '$GITHUB_REF_NAME')."
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v7
         with:
@@ -128,7 +146,9 @@ jobs:
 
       - name: 🚀 Run Release Drafter
         id: run-release-drafter
-        uses: release-drafter/release-drafter@v7
+        # Pinned: product repos read their config from ApolloAutomation/.github,
+        # which needs v7.1.0 or later. A floating tag could change that lookup.
+        uses: release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0
         with:
           version: ${{ steps.read_version.outputs.version }}
           publish: true
@@ -269,6 +289,11 @@ jobs:
       - set-version
     # Remove github.run_attempt == 1 to allow uploads on retries
     if: needs.check-for-yaml.outputs.yaml_changed == 'true' && inputs.publish-to-pages
+    # Resolved in the caller repo, so its github-pages branch policy
+    # (main only) now applies to this deploy.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     permissions:
       contents: write
       pages: write
