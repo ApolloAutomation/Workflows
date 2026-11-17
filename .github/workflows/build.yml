@@ -269,6 +269,11 @@ jobs:
       - set-version
     # Remove github.run_attempt == 1 to allow uploads on retries
     if: needs.check-for-yaml.outputs.yaml_changed == 'true' && inputs.publish-to-pages
+    # Resolved in the caller repo, so its github-pages branch policy
+    # (main only) now applies to this deploy.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     permissions:
       contents: write
       pages: write
