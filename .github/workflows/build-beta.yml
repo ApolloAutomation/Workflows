@@ -34,6 +34,7 @@ on:
           Newline list of paths that count as a firmware change when deciding
           whether a newer beta commit supersedes this build. An entry ending
           in "/" matches everything under it; any other entry matches one file.
+          Literal paths only, no globs; the run fails on entries that can't match.
         required: false
         type: string
         default: |
@@ -103,15 +104,49 @@ jobs:
             echo "::error::Invalid release-tag: $RELEASE_TAG"
             exit 1
           fi
-          if [ -z "$(tr -d '[:space:]' <<< "$FIRMWARE_PATHS")" ]; then
-            echo "::error::firmware-paths must list at least one path."
-            exit 1
-          fi
           jq -r '.[] | "Variant \(.name): \(.yaml) -> manifest\(if .key == "" then "" else "-" + .key end).json"' <<< "$VARIANTS"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Check firmware-paths
+        env:
+          FIRMWARE_PATHS: ${{ inputs.firmware-paths }}
+        run: |
+          # Matching is literal, not a paths: glob. An entry that matches
+          # nothing turns off the newer-commit check, letting an old run
+          # publish over newer beta firmware, so fail on the usual mistakes.
+          n=0
+          bad=0
+          while IFS= read -r e; do
+            e=$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<< "$e")
+            [ -n "$e" ] || continue
+            n=$((n + 1))
+            if [[ "$e" == *[\*?\[\]\{\}!]* ]]; then
+              echo "::error::firmware-paths entry '$e' has a glob character; use a literal file, or a folder ending in /."
+              bad=1
+            elif [[ "$e" == /* || "$e" == ./* || "$e" == *..* ]]; then
+              echo "::error::firmware-paths entry '$e' must be relative to the repo root."
+              bad=1
+            elif [[ "$e" == */ ]]; then
+              if [ -z "$(git ls-files -- "$e" | head -n 1)" ]; then
+                echo "::error::firmware-paths folder '$e' has no tracked files."
+                bad=1
+              fi
+            elif [ -d "$e" ]; then
+              echo "::error::firmware-paths entry '$e' is a folder; end it with / to match the files under it."
+              bad=1
+            elif [ -z "$(git ls-files --full-name -- ":(literal)$e")" ]; then
+              # A file may be added later, so only warn.
+              echo "::warning::firmware-paths file '$e' is not tracked at this commit; it matches nothing."
+            fi
+          done <<< "$FIRMWARE_PATHS"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::firmware-paths must list at least one path."
+            bad=1
+          fi
+          exit "$bad"
 
       - id: read
         env:
@@ -132,7 +167,10 @@ jobs:
     strategy:
       matrix:
         include: ${{ fromJSON(inputs.variants) }}
-    uses: esphome/workflows/.github/workflows/build.yml@b2c0cffae477d81175c67e6a44651a9bc2b49f6f # 2026.11.0
+    # 2026.10.3, not 2026.11.0: same build.yml, but 2026.11.0 calls its own
+    # actions by tag and keeps the SHAs in a lockfile that is not applied
+    # when another repo calls this workflow. 2026.10.3 pins them inline.
+    uses: esphome/workflows/.github/workflows/build.yml@e1432c7b31fec7d24a13dc192953ebac836ed98a # 2026.10.3
     with:
       files: ${{ matrix.yaml }}
       esphome-version: ${{ inputs.esphome-version }}
