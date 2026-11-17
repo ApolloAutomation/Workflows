@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: ''
+      release-branch:
+        description: 'Only branch this workflow may release and publish from'
+        required: false
+        type: string
+        default: 'main'
 
     outputs:
       version:
@@ -63,6 +68,18 @@ jobs:
     outputs:
       yaml_changed: ${{ steps.check.outputs.yaml_changed }}
     steps:
+      # Every other job needs this one, so a refused run creates no release,
+      # tag, asset upload or Pages deploy. Catches workflow_dispatch from a
+      # feature branch, which would otherwise publish a release.
+      - name: Refuse to release from a non-release branch
+        env:
+          RELEASE_BRANCH: ${{ inputs.release-branch }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "branch" ] || [ "$GITHUB_REF_NAME" != "$RELEASE_BRANCH" ]; then
+            echo "::error::Releases publish only from '$RELEASE_BRANCH' (this run: $GITHUB_REF_TYPE '$GITHUB_REF_NAME')."
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@v7
         with:
