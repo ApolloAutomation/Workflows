@@ -238,6 +238,7 @@ jobs:
       - name: Rewrite manifests to absolute URLs and upload assets
         env:
           VARIANTS: ${{ inputs.variants }}
+          CORE_YAML: ${{ inputs.core-yaml-path }}
         run: |
           # Only beta publishes; runs dispatched on other branches build but never
           # touch the release.
@@ -262,40 +263,57 @@ jobs:
           esac
           BASE="https://github.com/$REPO/releases/download/$RELEASE_TAG"
           # Each build uploads under its own names, so the manifest devices are
-          # reading always points at files that exist and match it.
-          BUILD="r${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          # reading always points at files that exist and match it. The run ID,
+          # not the run number: run numbers count per workflow file, so another
+          # caller file (or the old per-repo workflow) reuses them.
+          BUILD="r${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           # Bins the live manifests point at stay one more build, so a device that
           # checked before this publish can still install what it was offered.
-          # Old bins are only deleted when every live manifest was read in full;
+          # Old bins are only deleted when every live manifest parses in full;
           # anything less skips cleanup this round.
+          # The live manifests also feed the version check below, so failing to
+          # list or download them fails the run (before anything is uploaded)
+          # instead of letting a same-version build through unchecked.
           SKIP_CLEANUP=
           KEEP=""
           rm -rf prev
           mkdir -p prev
-          if ! assets=$(gh release view "$RELEASE_TAG" -R "$REPO" --json assets --jq '.assets[].name'); then
-            echo "::warning::Could not list the $RELEASE_TAG assets; keeping all old firmware this round."
-            SKIP_CLEANUP=1
-          else
-            live=$(printf '%s\n' "$assets" | grep -E '^manifest.*[.]json$' || true)
-            if [ -n "$live" ]; then
-              # A failed or partial download shows up below as an unreadable manifest.
-              gh release download "$RELEASE_TAG" -R "$REPO" -p 'manifest*.json' -D prev --clobber || true
-              while IFS= read -r m; do
-                if refs=$(jq -r '[.builds[] | .ota.path, ((.parts // [])[].path)]
-                      | if length == 0 or any(.[]; type != "string") then error("no firmware paths")
-                        else .[] | sub(".*/"; "") end' "prev/$m" 2>/dev/null) && [ -n "$refs" ]; then
-                  KEEP+="$refs"$'\n'
-                else
-                  echo "::warning::Could not read the live $m; keeping all old firmware this round."
-                  SKIP_CLEANUP=1
-                fi
-              done <<< "$live"
+          if ! rel_assets=$(gh release view "$RELEASE_TAG" -R "$REPO" --json assets --jq '.assets'); then
+            echo "::error::Could not list the $RELEASE_TAG assets, so the live beta version could not be checked; nothing was published. Re-run this job."
+            exit 1
+          fi
+          live=$(jq -r '.[].name | select(test("^manifest.*[.]json$"))' <<< "$rel_assets")
+          if [ -n "$live" ]; then
+            if ! gh release download "$RELEASE_TAG" -R "$REPO" -p 'manifest*.json' -D prev --clobber; then
+              echo "::error::Could not download the live $RELEASE_TAG manifests, so the live beta version could not be checked; nothing was published. Re-run this job."
+              exit 1
             fi
+            while IFS= read -r m; do
+              if [ ! -s "prev/$m" ]; then
+                echo "::error::The live $m did not download, so the live beta version could not be checked; nothing was published. Re-run this job."
+                exit 1
+              fi
+            done <<< "$live"
+            # A manifest that downloaded but does not parse only skips cleanup:
+            # publishing over it is the repair.
+            while IFS= read -r m; do
+              if refs=$(jq -r '[.builds[] | .ota.path, ((.parts // [])[].path)]
+                    | if length == 0 or any(.[]; type != "string") then error("no firmware paths")
+                      else .[] | sub(".*/"; "") end' "prev/$m" 2>/dev/null) && [ -n "$refs" ]; then
+                KEEP+="$refs"$'\n'
+              else
+                echo "::warning::Could not read the live $m; keeping all old firmware this round."
+                SKIP_CLEANUP=1
+              fi
+            done <<< "$live"
           fi
           # Pass 1 prepares and checks every variant; nothing is uploaded until
           # all of them pass, so a bad build changes nothing on the release.
           rm -rf staged
           mkdir -p staged
+          SAME=""
+          SAME_V=""
+          SAME_RIDS=""
           while IFS= read -r variant; do
             key=$(jq -r '.key' <<< "$variant")
             name=$(jq -r '.name' <<< "$variant")
@@ -347,7 +365,126 @@ jobs:
               echo "::error::$out names bins that $name did not build: $missing"
               exit 1
             fi
+            # A device is offered an update only when the manifest version
+            # differs from its own, so a live manifest that already has this
+            # version hides this build. Collected here, judged after the loop.
+            # Bins from an earlier attempt of this run are this same commit.
+            new_v=$(jq -r '.version // empty' "staged/$out")
+            if [ -s "prev/$out" ]; then
+              if ! live_v=$(jq -r '.version // empty' "prev/$out" 2>/dev/null); then
+                echo "::warning::Could not read the version of the live $out; not checking it for a version clash."
+              elif [ -n "$new_v" ] && [ "$new_v" = "$live_v" ] \
+                  && ! jq -e --arg p "${key:+$key-}r${GITHUB_RUN_ID}." \
+                       '[.builds[].ota.path | sub(".*/"; "")] | length > 0 and all(.[]; startswith($p))' \
+                       "prev/$out" > /dev/null 2>&1; then
+                SAME+="$out "
+                SAME_V="$new_v"
+                # Bins this workflow uploaded are named <key->r<run ID>.<attempt>-,
+                # which names the run, and so the commit, that published them.
+                rid=$(jq -r --arg p "${key:+$key-}r" '
+                    [.builds[].ota.path | sub(".*/"; "") | select(startswith($p)) | ltrimstr($p)
+                     | (capture("^(?<id>[0-9]+)[.][0-9]+-") // {id: null}).id]
+                    | unique | if length == 1 and .[0] != null then .[0] else "" end' \
+                    "prev/$out" 2>/dev/null) || rid=""
+                SAME_RIDS+="${rid:--} "
+              fi
+            fi
           done < <(jq -c '.[]' <<< "$VARIANTS")
+          # Same version as the live beta is fine for the commit that is already
+          # published and for commits that change no firmware since. Otherwise
+          # stop before anything is uploaded.
+          if [ -n "$SAME" ]; then
+            # Which commit is live is asked of the run that uploaded the live
+            # manifests, not only the tag: the older per-repo workflow uploaded
+            # without moving the tag, and a run can upload and then fail before
+            # moving it. Run IDs in the bin names come first; for older bins,
+            # the one run of this workflow file on $BETA_BRANCH that was running
+            # when the manifest was uploaded. The runs API is public for public
+            # repos, so no extra token permission is needed. If neither works,
+            # or the variants disagree, the tag is used.
+            wf=${GITHUB_WORKFLOW_REF#"$REPO"/}
+            wf=${wf%%@*}
+            runs=""
+            pub=""
+            pub_ok=1
+            read -r -a outs <<< "$SAME"
+            read -r -a rids <<< "$SAME_RIDS"
+            for i in "${!outs[@]}"; do
+              o=${outs[$i]}
+              rid=${rids[$i]}
+              s=""
+              if [ "$rid" != - ] && r=$(gh api "repos/$REPO/actions/runs/$rid" 2>/dev/null); then
+                s=$(jq -r --arg b "$BETA_BRANCH" '
+                    select(.head_branch == $b and (.event == "push" or .event == "workflow_dispatch"))
+                    | .head_sha // empty' <<< "$r") || s=""
+              fi
+              if [ -z "$s" ]; then
+                t=$(jq -r --arg n "$o" '.[] | select(.name == $n) | .updatedAt // empty' <<< "$rel_assets")
+                if [ -z "$runs" ]; then
+                  runs=$(gh api "repos/$REPO/actions/runs?branch=$BETA_BRANCH&per_page=100" --jq '.workflow_runs' 2>/dev/null) || runs=""
+                fi
+                if [ -n "$t" ] && [ -n "$runs" ]; then
+                  s=$(jq -r --arg t "$t" --arg wf "$wf" '
+                      [.[] | select(.path == $wf and (.event == "push" or .event == "workflow_dispatch")
+                                    and .run_started_at <= $t and .updated_at >= $t) | .head_sha]
+                      | unique | if length == 1 then .[0] else "" end' <<< "$runs") || s=""
+                fi
+              fi
+              if ! [[ "$s" =~ ^[0-9a-f]{40}$ ]]; then
+                pub_ok=0
+              elif [ -z "$pub" ]; then
+                pub=$s
+              elif [ "$pub" != "$s" ]; then
+                pub_ok=0
+              fi
+            done
+            if [ "$pub_ok" = 1 ] && [ -n "$pub" ]; then
+              base=$pub
+              src="the run that uploaded it"
+            else
+              base=$(gh api "repos/$REPO/commits/tags/$RELEASE_TAG" --jq '.sha' 2>/dev/null) || base=""
+              src="the $RELEASE_TAG tag, as the run that uploaded it could not be identified"
+            fi
+            echo "Live version $SAME_V (${SAME% }) was published from ${base:-an unknown commit} (from $src)."
+            if [ "$base" = "$GITHUB_SHA" ]; then
+              echo "::notice::$RELEASE_TAG already serves version $SAME_V from this commit; publishing it again."
+            else
+              # Firmware paths must be the same at both commits, whichever is
+              # older: the live commit can be ahead when an older commit is
+              # re-run after a later no-firmware commit was published.
+              changed=unknown
+              cq='{status, files: [(.files // [])[] | {filename, previous_filename}]}'
+              if [[ "$base" =~ ^[0-9a-f]{40}$ ]] \
+                  && c=$(gh api "repos/$REPO/compare/${base}...${GITHUB_SHA}" --jq "$cq" 2>/dev/null); then
+                if [ "$(jq -r '.status' <<< "$c")" = behind ]; then
+                  c=$(gh api "repos/$REPO/compare/${GITHUB_SHA}...${base}" --jq "$cq" 2>/dev/null) || c=""
+                fi
+                if [ -n "$c" ]; then
+                  # Workflow files rebuild beta but don't change the firmware,
+                  # so they never need a version bump.
+                  fw_src=$(grep -v '^[[:space:]]*[.]github/' <<< "$FIRMWARE_PATHS" || true)
+                  changed=$(jq -r --arg paths "$fw_src" "$HEAD_FILTER" <<< "$c")
+                fi
+              fi
+              if [ "$changed" != 0 ]; then
+                if ! [[ "$base" =~ ^[0-9a-f]{40}$ ]]; then
+                  from="a commit that could not be identified (no publishing run found, $RELEASE_TAG tag unreadable)"
+                  why="so ${GITHUB_SHA::7} cannot be shown to carry the same firmware"
+                else
+                  from="commit ${base::7} (from $src)"
+                  case "$changed" in
+                    unknown) why="and the two could not be compared" ;;
+                    not-contained) why="and ${GITHUB_SHA::7} is not on the same history as it" ;;
+                    truncated) why="and they differ in 300+ files, too many to check for firmware changes" ;;
+                    *) why="and ${GITHUB_SHA::7} differs from it in $changed firmware file(s)" ;;
+                  esac
+                fi
+                echo "::error title=Beta version not bumped::$RELEASE_TAG already serves version $SAME_V (${SAME% }) from $from, $why. Devices compare versions as strings, so they would never be offered this build. Bump substitutions.version in $CORE_YAML on $BETA_BRANCH and push; nothing was published."
+                exit 1
+              fi
+              echo "::notice::Version $SAME_V is already live, but no firmware path differs between ${base::7} and ${GITHUB_SHA::7}; publishing."
+            fi
+          fi
           # Pass 2 uploads. Firmware first, and a manifest only once the release
           # lists every bin it names. A failed upload fails the step.
           while IFS= read -r key; do
