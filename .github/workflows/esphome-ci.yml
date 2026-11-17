@@ -15,6 +15,38 @@ on:
           stable
           beta
           dev
+      beta-version-check:
+        description: 'On pull requests into beta-branch, fail when the version is already live on the beta release'
+        required: false
+        type: boolean
+        default: true
+      beta-branch:
+        description: 'Base branch whose pull requests get the beta version check'
+        required: false
+        type: string
+        default: 'beta'
+      beta-release-tag:
+        description: 'Release that holds the live beta manifests'
+        required: false
+        type: string
+        default: 'beta-fw'
+      core-yaml-path:
+        description: 'YAML file whose substitutions.version is the firmware version'
+        required: false
+        type: string
+        default: 'Integrations/ESPHome/Core.yaml'
+      firmware-paths:
+        description: >-
+          Newline list of paths that count as a firmware change needing a
+          version bump, in the same form as build-beta.yml's firmware-paths
+          (build-beta ignores its .github/ entries for this check, so leave
+          workflow files out here): an entry ending in "/" matches everything
+          under it, any other entry matches one file, no globs. Entries are
+          validated as in build-beta.yml; a malformed or empty list fails the job.
+        required: false
+        type: string
+        default: |
+          Integrations/ESPHome/
 
 jobs:
   prepare-matrix:
@@ -59,3 +91,138 @@ jobs:
         with:
           yaml-file: ${{ matrix.file }}
           version: ${{ matrix.esphome-version }}
+
+  beta-version:
+    name: Beta version bump
+    # Only pull requests into the beta branch: that merge is what gets published.
+    if: ${{ inputs.beta-version-check && github.event_name == 'pull_request' && github.base_ref == inputs.beta-branch }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout merge commit
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          # The merge commit and its parents: HEAD^1 is the base, HEAD^2 the PR.
+          fetch-depth: 2
+      - name: Compare version with the live beta manifests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BETA_BRANCH: ${{ inputs.beta-branch }}
+          RELEASE_TAG: ${{ inputs.beta-release-tag }}
+          CORE_YAML: ${{ inputs.core-yaml-path }}
+          FIRMWARE_PATHS: ${{ inputs.firmware-paths }}
+        run: |
+          if ! git rev-parse -q --verify 'HEAD^2' > /dev/null; then
+            echo "::notice::Not a pull request merge commit; skipping the beta version check."
+            exit 0
+          fi
+          # The same rules as build-beta.yml's "Check firmware-paths" step, so
+          # a value that would fail the beta build fails here too instead of
+          # silently matching nothing. Folders are checked against the merge
+          # result, which is the tree build-beta.yml will see.
+          n=0
+          bad=0
+          canon='^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/?$'
+          while IFS= read -r e; do
+            e=$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<< "$e")
+            [ -n "$e" ] || continue
+            n=$((n + 1))
+            if [[ "$e" == *[\*?\[\]\{\}!]* ]]; then
+              echo "::error::firmware-paths entry '$e' has a glob character; use a literal file, or a folder ending in /."
+              bad=1
+            elif ! [[ "$e" =~ $canon ]] || [[ "$e" == *..* || "$e" == . || "$e" == ./* \
+                || "$e" == */. || "$e" == */./* ]]; then
+              echo "::error::firmware-paths entry '$e' must be a plain repo-relative path: letters, digits, . _ - and single / between names, no ./ or .. parts, no leading / or :."
+              bad=1
+            elif [[ "$e" == */ ]]; then
+              if [ -z "$(git ls-files --full-name -- ":(literal)$e" | head -n 1)" ]; then
+                echo "::error::firmware-paths folder '$e' has no tracked files."
+                bad=1
+              fi
+            elif [ -d "$e" ]; then
+              echo "::error::firmware-paths entry '$e' is a folder; end it with / to match the files under it."
+              bad=1
+            elif ! git ls-files --full-name --error-unmatch -- ":(literal)$e" > /dev/null 2>&1; then
+              echo "::warning::firmware-paths file '$e' is not tracked at this commit; it matches nothing."
+            fi
+          done <<< "$FIRMWARE_PATHS"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::firmware-paths must list at least one path. Set beta-version-check: false to turn this check off."
+            bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then
+            exit 1
+          fi
+          paths=$(jq -Rsc 'split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))' <<< "$FIRMWARE_PATHS")
+          # Matched the way build-beta.yml matches compare results: exact
+          # names, folders by prefix, renames under both names.
+          changed=$(git diff --name-only --no-renames -z 'HEAD^1' HEAD \
+            | jq -Rsr --argjson p "$paths" '
+                split("\u0000")[] | select(length > 0) | . as $f
+                | select(any($p[]; . as $q
+                    | if ($q | endswith("/")) then ($f | startswith($q)) else $f == $q end))
+                | @json')
+          if [ -z "$changed" ]; then
+            echo "No firmware changes in this pull request; no version bump needed."
+            exit 0
+          fi
+          # JSON-quoted behind a prefix: names come from the pull request and
+          # must not read as workflow commands.
+          echo "Firmware files changed:"
+          while IFS= read -r f; do
+            echo "  changed: $f"
+          done <<< "$changed"
+          if [ ! -f "$CORE_YAML" ]; then
+            echo "::warning::$CORE_YAML not found; skipping the beta version check. Set core-yaml-path."
+            exit 0
+          fi
+          # Same parsing as build-beta.yml, read from the merge result.
+          v=$(awk '/substitutions:/ {f=1} f && /version:/ {print $2; exit}' "$CORE_YAML" | tr -d '"')
+          if [ -z "$v" ]; then
+            echo "::warning::No substitutions version found in $CORE_YAML; skipping the beta version check."
+            exit 0
+          fi
+          # Only a missing release skips the check; any other failure fails
+          # the job, so an API outage cannot turn it green.
+          err="$RUNNER_TEMP/gh-release.err"
+          if ! assets=$(gh api "repos/$REPO/releases/tags/$RELEASE_TAG" --jq '.assets[].name' 2> "$err"); then
+            if grep -q 'HTTP 404' "$err"; then
+              echo "::notice::No $RELEASE_TAG release in $REPO; skipping the beta version check."
+              exit 0
+            fi
+            cat "$err" >&2
+            echo "::error::Could not read the $RELEASE_TAG release, so the version could not be checked. Re-run this job."
+            exit 1
+          fi
+          if ! grep -qE '^manifest.*[.]json$' <<< "$assets"; then
+            echo "::notice::$RELEASE_TAG has no manifests yet; skipping the beta version check."
+            exit 0
+          fi
+          live="$RUNNER_TEMP/live-beta"
+          rm -rf "$live"
+          mkdir -p "$live"
+          if ! gh release download "$RELEASE_TAG" -R "$REPO" -p 'manifest*.json' -D "$live" --clobber; then
+            echo "::error::Could not download the $RELEASE_TAG manifests, so the version could not be checked. Re-run this job."
+            exit 1
+          fi
+          clash=""
+          for m in "$live"/manifest*.json; do
+            [ -f "$m" ] || continue
+            if ! live_v=$(jq -r '.version // empty' "$m" 2>/dev/null); then
+              echo "::warning::Could not read $(basename "$m"); ignoring it."
+              continue
+            fi
+            echo "$(basename "$m"): $live_v"
+            if [ "$live_v" = "$v" ]; then
+              clash+="$(basename "$m") "
+            fi
+          done
+          if [ -n "$clash" ]; then
+            echo "::error file=$CORE_YAML,title=Beta version not bumped::This pull request changes firmware and would merge into $BETA_BRANCH as version $v, which the live $RELEASE_TAG manifests (${clash% }) already carry. Devices compare versions as strings, so they would never be offered this build. Bump substitutions.version in $CORE_YAML; this applies to syncs from another branch too."
+            exit 1
+          fi
+          echo "Version $v differs from every live $RELEASE_TAG manifest."
