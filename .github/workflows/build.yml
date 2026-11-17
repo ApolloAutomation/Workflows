@@ -146,7 +146,9 @@ jobs:
 
       - name: 🚀 Run Release Drafter
         id: run-release-drafter
-        uses: release-drafter/release-drafter@v7
+        # Pinned: product repos read their config from ApolloAutomation/.github,
+        # which needs v7.1.0 or later. A floating tag could change that lookup.
+        uses: release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0
         with:
           version: ${{ steps.read_version.outputs.version }}
           publish: true
