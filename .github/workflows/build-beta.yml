@@ -34,7 +34,9 @@ on:
           Newline list of paths that count as a firmware change when deciding
           whether a newer beta commit supersedes this build. An entry ending
           in "/" matches everything under it; any other entry matches one file.
-          Literal paths only, no globs; the run fails on entries that can't match.
+          Plain repo-relative paths compared as exact strings: no globs, "//",
+          "./", ".." or leading "/" or ":". The run fails on any of these and on
+          folders with no tracked files, and warns on untracked files.
         required: false
         type: string
         default: |
@@ -116,9 +118,13 @@ jobs:
         run: |
           # Matching is literal, not a paths: glob. An entry that matches
           # nothing turns off the newer-commit check, letting an old run
-          # publish over newer beta firmware, so fail on the usual mistakes.
+          # publish over newer beta firmware, so fail on anything that is not
+          # already in the exact form the compare API reports file names in.
+          # git would normalize "a//b", "a/./b" or ":(top)a" and still find
+          # files, but the publish check compares raw strings, so reject them.
           n=0
           bad=0
+          canon='^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*/?$'
           while IFS= read -r e; do
             e=$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<< "$e")
             [ -n "$e" ] || continue
@@ -126,18 +132,19 @@ jobs:
             if [[ "$e" == *[\*?\[\]\{\}!]* ]]; then
               echo "::error::firmware-paths entry '$e' has a glob character; use a literal file, or a folder ending in /."
               bad=1
-            elif [[ "$e" == /* || "$e" == ./* || "$e" == *..* ]]; then
-              echo "::error::firmware-paths entry '$e' must be relative to the repo root."
+            elif ! [[ "$e" =~ $canon ]] || [[ "$e" == *..* || "$e" == . || "$e" == ./* \
+                || "$e" == */. || "$e" == */./* ]]; then
+              echo "::error::firmware-paths entry '$e' must be a plain repo-relative path: letters, digits, . _ - and single / between names, no ./ or .. parts, no leading / or :."
               bad=1
             elif [[ "$e" == */ ]]; then
-              if [ -z "$(git ls-files -- "$e" | head -n 1)" ]; then
+              if [ -z "$(git ls-files --full-name -- ":(literal)$e" | head -n 1)" ]; then
                 echo "::error::firmware-paths folder '$e' has no tracked files."
                 bad=1
               fi
             elif [ -d "$e" ]; then
               echo "::error::firmware-paths entry '$e' is a folder; end it with / to match the files under it."
               bad=1
-            elif [ -z "$(git ls-files --full-name -- ":(literal)$e")" ]; then
+            elif ! git ls-files --full-name --error-unmatch -- ":(literal)$e" > /dev/null 2>&1; then
               # A file may be added later, so only warn.
               echo "::warning::firmware-paths file '$e' is not tracked at this commit; it matches nothing."
             fi
@@ -285,6 +292,10 @@ jobs:
               done <<< "$live"
             fi
           fi
+          # Pass 1 prepares and checks every variant; nothing is uploaded until
+          # all of them pass, so a bad build changes nothing on the release.
+          rm -rf staged
+          mkdir -p staged
           while IFS= read -r variant; do
             key=$(jq -r '.key' <<< "$variant")
             name=$(jq -r '.name' <<< "$variant")
@@ -307,20 +318,53 @@ jobs:
             find "$src" -name '*.bin' | while read -r bin; do
               mv "$bin" "$(dirname "$bin")/$pfx$(basename "$bin")"
             done
+            find "$src" -name '*.bin' > "staged/$out.bins"
             echo "Rewriting $man -> $out"
             # Make ota.path and parts[].path absolute release-asset URLs so the
             # device never has to resolve a relative path against a redirect.
             jq --arg base "$BASE" --arg pfx "$pfx" '
               .builds[0].ota.path = ($base + "/" + $pfx + (.builds[0].ota.path | sub(".*/"; "")))
               | .builds[0].parts |= map(.path = ($base + "/" + $pfx + (.path | sub(".*/"; ""))))
-            ' "$man" > "$out"
-            cat "$out"
-            # Firmware first, manifest last: the manifest never names a missing file.
-            # "{} +" (not "\;") so a failed upload fails the step.
-            find "$src" -name '*.bin' -exec \
-              gh release upload "$RELEASE_TAG" -R "$REPO" --clobber {} +
-            gh release upload "$RELEASE_TAG" "$out" -R "$REPO" --clobber
+            ' "$man" > "staged/$out"
+            cat "staged/$out"
+            # The manifest may only name bins this build uploads: every path is
+            # an asset URL for this variant and build, and each one was built.
+            if ! jq -r --arg url "$BASE/$pfx" '
+                  [.builds[] | .ota.path, ((.parts // [])[].path)]
+                  | if length == 0 or any(.[]; type != "string" or (startswith($url) | not))
+                    then error("bad firmware paths") else .[] | sub(".*/"; "") end' \
+                  "staged/$out" | sort -u > "staged/$out.want"; then
+              echo "::error::$out has a missing or non-$RELEASE_TAG firmware path for $name"
+              exit 1
+            fi
+            have=$(while IFS= read -r bin; do basename "$bin"; done < "staged/$out.bins" | sort)
+            if [ -z "$have" ] || [ -n "$(uniq -d <<< "$have")" ]; then
+              echo "::error::Expected uniquely named .bin files for $name, found: ${have:-none}"
+              exit 1
+            fi
+            missing=$(comm -23 "staged/$out.want" <(printf '%s\n' "$have"))
+            if [ -n "$missing" ]; then
+              echo "::error::$out names bins that $name did not build: $missing"
+              exit 1
+            fi
           done < <(jq -c '.[]' <<< "$VARIANTS")
+          # Pass 2 uploads. Firmware first, and a manifest only once the release
+          # lists every bin it names. A failed upload fails the step.
+          while IFS= read -r key; do
+            out="manifest${key:+-$key}.json"
+            bins=()
+            while IFS= read -r bin; do
+              bins+=("$bin")
+            done < "staged/$out.bins"
+            gh release upload "$RELEASE_TAG" -R "$REPO" --clobber "${bins[@]}"
+            rel=$(gh release view "$RELEASE_TAG" -R "$REPO" --json assets --jq '.assets[].name' | sort -u)
+            missing=$(comm -23 "staged/$out.want" <(printf '%s\n' "$rel"))
+            if [ -n "$missing" ]; then
+              echo "::error::Not uploading $out: the release is missing $missing"
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" "staged/$out" -R "$REPO" --clobber
+          done < <(jq -r '.[].key' <<< "$VARIANTS")
           # Drop bins that neither this build nor the previous one uses. Failures
           # here only leave extra files behind, so they are warnings.
           if [ -n "$SKIP_CLEANUP" ]; then
