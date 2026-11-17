@@ -3,9 +3,10 @@ name: Build, Release and Publish Firmware
 on:
   workflow_call:
     inputs:
+      # Unused; still accepted so existing callers keep working.
       device-name:
-        description: 'Device name (e.g., btn-1, r-pro-1)'
-        required: true
+        description: 'Device name (e.g., btn-1, r-pro-1). Unused, kept for existing callers.'
+        required: false
         type: string
       yaml-files:
         description: 'YAML file(s) to build (multiline string for multiple files)'
